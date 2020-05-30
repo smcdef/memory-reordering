@@ -22,10 +22,52 @@
 #include <linux/semaphore.h>
 #include <linux/delay.h>
 
-static int x, y;
-static int r1, r2;
+/* #define CONFIG_ORDERING_RMO */
 
 static DEFINE_PER_CPU(struct task_struct *, ordering_tasks);
+
+#ifdef CONFIG_ORDERING_RMO
+static atomic_t count = ATOMIC_INIT(0);
+static unsigned int a, b;
+
+static void ordering_thread_fn_cpu0(void)
+{
+	atomic_inc(&count);
+}
+
+static void ordering_thread_fn_cpu1(void)
+{
+	int temp = atomic_read(&count);
+
+	a = temp;
+#ifdef CONFIG_USE_CPU_BARRIER
+	smp_wmb();
+#else
+	/* Prevent compiler reordering. */
+	barrier();
+#endif
+	b = temp;
+}
+
+static void ordering_thread_fn_cpu2(void)
+{
+	unsigned int c, d;
+
+	d = b;
+#ifdef CONFIG_USE_CPU_BARRIER
+	smp_rmb();
+#else
+	/* Prevent compiler reordering. */
+	barrier();
+#endif
+	c = a;
+
+	if ((int)(d - c) > 0)
+		pr_info("reorders detected, a = %d, b = %d\n", c, d);
+}
+#else
+static int x, y;
+static int r1, r2;
 
 static struct semaphore sem_x;
 static struct semaphore sem_y;
@@ -77,7 +119,7 @@ static void ordering_thread_fn_cpu2(void)
 	if (r1 == 0 && r2 == 0)
 		pr_info("%d reorders detected\n", ++detected);
 }
-
+#endif
 static void ordering_thread_fn(unsigned int cpu)
 {
 	switch (cpu) {
@@ -111,9 +153,11 @@ static struct smp_hotplug_thread ordering_smp_thread = {
 
 static int __init ordering_init(void)
 {
+#ifndef CONFIG_ORDERING_RMO
 	sema_init(&sem_x, 0);
 	sema_init(&sem_y, 0);
 	sema_init(&sem_end, 0);
+#endif
 
 	return smpboot_register_percpu_thread(&ordering_smp_thread);
 }
